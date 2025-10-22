@@ -16,7 +16,7 @@ class SMBConnector:
     def __init__(self, root):
         self.driver_letter = "X"
         self.root = root
-        self.root.title("光高网络硬盘 v1.0.2")
+        self.root.title("光高网络硬盘 v1.0.4")
         self.root.resizable(False, False)
         
             # 替换原有的图标路径获取和加载代码
@@ -108,9 +108,7 @@ class SMBConnector:
         self.current_path = ""
         self.load_config()
         
-        # 程序启动时检查并清理现有连接
-        self.update_status("正在检查现有SMB连接...")
-        self.check_smb_connections()
+
 
         # -------------------------- 关键：窗口居中代码 --------------------------
         # 1. 先更新窗口布局，确保能获取到正确的窗口尺寸
@@ -137,7 +135,7 @@ class SMBConnector:
     def on_close(self):
         self.save_config()
         # 使用更彻底的断开连接方法
-        # self.force_disconnect_all_smb()
+        self.force_disconnect_all_smb()
         self.root.destroy()
     
     def update_status(self, message):
@@ -214,7 +212,7 @@ class SMBConnector:
         self.save_config()
         
         # 在连接前先检查并清理现有连接
-        self.force_disconnect_all_smb()
+        self.run_command('net use * /delete /y', show_output=False)
         
         if user and pwd:
             command = f'net use {self.driver_letter}: "{path}" /user:{user} {pwd}'
@@ -233,6 +231,32 @@ class SMBConnector:
             # messagebox.showinfo("成功", f"已成功连接到 {selected_text}")
             self.open_smb()
         else:
+            if "1219" in result:
+                self.update_status("检测到错误代码1219...")
+                try:
+                    # 停止Workstation服务
+                    self.run_command('net stop "Workstation" /y', show_output=False)
+                    # time.sleep(1)
+                    # 启动Workstation服务
+                    self.run_command('net start "Workstation"', show_output=False)
+                    
+                    # 再次清理
+                    self.run_command('net use * /delete /y', show_output=False)
+                    
+                    result = self.run_command(command)
+                    
+                    # 获取显示文本用于提示（仅为了用户友好，不影响路径逻辑）
+                    selected_text = next((opt[0] for opt in self.smb_options if opt[1] == path), "未知路径")
+                    if "成功" in result:
+                        self.connected = True
+                        self.current_path = path
+                        self.update_status(f"已成功连接到: {selected_text}")
+                        self.disconnect_btn.config(state=tk.NORMAL)
+                        # messagebox.showinfo("成功", f"已成功连接到 {selected_text}")
+                        self.open_smb()
+                    return                
+                except Exception as e:
+                    self.update_status(f"重启服务时发生错误: {str(e)}")           
             self.update_status(f"连接失败: {result}")
             messagebox.showerror("失败", f"连接SMB共享失败\n{result}")
     
@@ -272,10 +296,8 @@ class SMBConnector:
             # 1. 使用net use清理所有连接
             self.run_command('net use * /delete /y', show_output=False)
             
-            # 2. 等待系统处理
-            import time
             
-            # 3. 检查是否还有PowerShell连接残留
+            # 2. 检查是否还有PowerShell连接残留
             ps_check = self.run_command('powershell -Command "Get-SmbConnection | Format-Table -AutoSize"', show_output=False)
             if "10.32.10.17" in ps_check:
                 self.update_status("检测到PowerShell SMB连接残留，正在重启Workstation服务...")
