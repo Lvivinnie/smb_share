@@ -10,13 +10,16 @@ from PIL import ImageTk, Image
 import base64
 from io import BytesIO
 import re
+import ctypes
+import subprocess
+import sys
 
 class SMBConnector:
     driver_letter = "X"
     def __init__(self, root):
         self.driver_letter = "X"
         self.root = root
-        self.root.title("光高网络硬盘 v1.0.4")
+        self.root.title("光高网络硬盘 v1.0.6")
         self.root.resizable(False, False)
         
             # 替换原有的图标路径获取和加载代码
@@ -194,7 +197,53 @@ class SMBConnector:
             self.update_status(f"已加载配置文件: {self.config_file}")
         except Exception as e:
             self.update_status(f"加载配置失败: {str(e)}")
-    
+            
+    def is_admin(self):
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin()
+        except:
+            return False
+
+    def run_admin_command(self,command):
+        """以管理员身份执行单个命令（仅在需要时）"""
+        if self.is_admin():
+            # 已为管理员，直接执行
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True
+            )
+            return result.stdout + result.stderr
+        else:
+            # 非管理员，请求临时提升权限执行命令
+            # 注意：通过runas启动时，输出无法直接捕获，需重定向到临时文件
+            import time
+            pid = os.getpid()
+            timestamp = int(time.time() * 1000)  # 毫秒级时间戳
+            temp_output = os.path.join(os.environ["TEMP"], f"{timestamp}_admin_cmd_output_{pid}.txt")
+            # 构造带输出重定向的命令
+            cmd_with_redirect = f'{command} > "{temp_output}" 2>&1'
+            # 调用ShellExecuteW以管理员身份运行cmd执行命令
+            hinstance = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", "cmd.exe", f'/c {cmd_with_redirect}', None, 0  # 1=显示命令窗口
+            )
+            # 检查是否启动成功（ShellExecuteW返回值>32表示成功）
+            if hinstance <= 32:
+                return f"命令执行失败：无法获取管理员权限（错误码：{hinstance}）"
+            # 等待命令执行完成（简单延迟，实际可根据需求优化）
+            import time
+            time.sleep(3)  # 根据命令耗时调整
+            # 读取临时文件中的输出
+            if os.path.exists(temp_output):
+                with open(temp_output, "r", encoding="gbk", errors="ignore") as f:
+                    output = f.read()
+                os.remove(temp_output)  # 清理临时文件
+                return output
+            else:
+                return "命令执行成功，但未捕获到输出"
+
+
     def connect_smb(self):
         """连接SMB：直接从单选按钮变量获取路径（核心修改，逻辑简化）"""
         path = self.selected_smb_path.get()  # 无需再通过显示文本匹配路径
@@ -213,7 +262,10 @@ class SMBConnector:
         
         # 在连接前先检查并清理现有连接
         self.run_command('net use * /delete /y', show_output=False)
-        
+        # if user and pwd:
+        #     server = path.split("\\")[2] if "\\" in path else path         # 提取SMB服务器地址（如从\\10.32.10.17\...中提取10.32.10.17）
+        #     # 添加凭据：cmdkey /add:服务器 /user:用户名 /pass:密码
+        #     self.run_command(f'cmdkey /add:{server} /user:{user} /pass:{pwd}', show_output=False)
         if user and pwd:
             command = f'net use {self.driver_letter}: "{path}" /user:{user} {pwd}'
         else:
@@ -228,37 +280,60 @@ class SMBConnector:
             self.current_path = path
             self.update_status(f"已成功连接到: {selected_text}")
             self.disconnect_btn.config(state=tk.NORMAL)
-            # messagebox.showinfo("成功", f"已成功连接到 {selected_text}")
             self.open_smb()
+            # messagebox.showinfo("成功", f"已成功连接到 {selected_text}")
+            
         else:
             if "1219" in result:
                 self.update_status("检测到错误代码1219...")
                 try:
-                    # 停止Workstation服务
-                    self.run_command('net stop "Workstation" /y', show_output=False)
-                    # time.sleep(1)
+                    msg = ""
+                    msg = self.run_admin_command('net stop "Workstation" /y')
+                    # msg = self.run_command('net stop "Workstation" /y', show_output=False)                     # 停止Workstation服务
+                    self.update_status(msg)
                     # 启动Workstation服务
-                    self.run_command('net start "Workstation"', show_output=False)
-                    
+
+                    msg = self.run_admin_command('net start "Workstation"')
+                    self.update_status(msg)
                     # 再次清理
-                    self.run_command('net use * /delete /y', show_output=False)
+                    msg = self.run_command('net use * /delete /y', show_output=False)
+                    self.update_status(msg)
                     
-                    result = self.run_command(command)
+                    msg = self.run_command(command)
                     
                     # 获取显示文本用于提示（仅为了用户友好，不影响路径逻辑）
                     selected_text = next((opt[0] for opt in self.smb_options if opt[1] == path), "未知路径")
-                    if "成功" in result:
+                    if "成功" in msg:
                         self.connected = True
                         self.current_path = path
                         self.update_status(f"已成功连接到: {selected_text}")
                         self.disconnect_btn.config(state=tk.NORMAL)
-                        # messagebox.showinfo("成功", f"已成功连接到 {selected_text}")
                         self.open_smb()
-                    return                
+                        return                
                 except Exception as e:
-                    self.update_status(f"重启服务时发生错误: {str(e)}")           
-            self.update_status(f"连接失败: {result}")
-            messagebox.showerror("失败", f"连接SMB共享失败\n{result}")
+                    self.update_status(f"重启服务时发生错误: {str(e)}")  
+                    messagebox.showinfo("失败", f"重启服务时发生错误: {str(e)}")
+            elif "85" in result:
+                self.run_admin_command('net start "Workstation"')
+                self.run_command(command)
+                self.connected = True
+                self.current_path = path
+                self.update_status(f"已成功连接到: {selected_text}")
+                self.disconnect_btn.config(state=tk.NORMAL)
+                self.open_smb()
+                return
+            elif "67" in result:
+                self.run_admin_command('net start "Workstation"')
+                self.run_command(command)
+                self.connected = True
+                self.current_path = path
+                self.update_status(f"已成功连接到: {selected_text}")
+                self.disconnect_btn.config(state=tk.NORMAL)
+                self.open_smb()
+                return  
+            else:             
+                self.update_status(f"连接失败: {result}")
+                messagebox.showerror("失败", f"连接SMB共享失败\n{result}")
     
     def open_smb(self):
         if not self.connected or not self.current_path:
