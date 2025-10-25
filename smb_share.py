@@ -13,6 +13,8 @@ import re
 import ctypes
 import subprocess
 import sys
+import time
+import webbrowser
 
 class SMBConnector:
     driver_letter = "X"
@@ -52,8 +54,10 @@ class SMBConnector:
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         
         # -------------------------- 核心修改：共享路径改为二选一单选按钮 --------------------------
-        ttk.Label(self.main_frame, text="访问:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        
+        self.remember_frame = ttk.Frame(self.main_frame)
+        self.remember_frame.grid(sticky=tk.E,row=3, column=0, columnspan=2, pady=2)
+        # ttk.Label(self.main_frame, text="访问:").grid(row=3, column=0, sticky=tk.W, pady=5)
+
         # 1. 创建变量存储选中的实际路径（而非显示文本，简化逻辑）
         self.selected_smb_path = tk.StringVar()
         # 2. 定义共享路径选项（显示文本, 实际路径）
@@ -62,8 +66,8 @@ class SMBConnector:
             ("共享文件夹", r"\\10.32.10.17\共享文件夹")
         ]
         # 3. 用Frame包裹单选按钮，保证排版整齐
-        self.radio_frame = ttk.Frame(self.main_frame)
-        self.radio_frame.grid(row=3, column=1, sticky=tk.W, pady=5)  # 左对齐，与输入框对齐
+        self.radio_frame = ttk.Frame(self.remember_frame)
+        # self.radio_frame.grid(row=3, column=1, sticky=tk.W, pady=5)  # 左对齐，与输入框对齐
         # 4. 创建两个单选按钮（互斥，绑定同一个变量）
         for idx, (text, path) in enumerate(self.smb_options):
             ttk.Radiobutton(
@@ -87,10 +91,21 @@ class SMBConnector:
         self.password = ttk.Entry(self.main_frame, width=40, show="*")
         self.password.grid(row=2, column=1, pady=5)
         
+
         self.remember_pwd = tk.BooleanVar()
-        self.pwd_check = ttk.Checkbutton(self.main_frame, text="记住密码", variable=self.remember_pwd)
+        self.pwd_check = ttk.Checkbutton(self.remember_frame, text="记住密码", variable=self.remember_pwd)
         self.pwd_check.grid(row=3, column=1, sticky=tk.E, pady=5)
         
+        self.link = tk.Label(
+            self.remember_frame,
+            text="备用入口",
+            font=("Arial", 10, "underline"),
+            fg="blue",
+            cursor="hand2",  # 鼠标悬停显示手型
+        )
+        self.link.bind("<Button-1>", lambda e: self.open_default_browser())
+        self.link.grid(row=3, column=0, sticky=tk.E, pady=5)
+
         self.button_frame = ttk.Frame(self.main_frame)
         self.button_frame.grid(row=5, column=0, columnspan=2, pady=15)
         
@@ -101,10 +116,12 @@ class SMBConnector:
         self.disconnect_btn.pack(side=tk.LEFT, padx=5)
         self.disconnect_btn.config(state=tk.DISABLED)
         
+
+        # self.link.pack(padx=5)
         # 状态区域：补充grid布局（原代码漏了，导致状态框不显示）
         # ttk.Label(self.main_frame, text="v1.0.1").grid(row=6, column=2, sticky=tk.W)
         self.status_text = tk.Text(self.main_frame, width=40, height=8, wrap=tk.WORD)
-        self.status_text.grid(row=7, column=0, columnspan=2, pady=5)
+        # self.status_text.grid(row=7, column=0, columnspan=2, pady=5)
         self.status_text.config(state=tk.DISABLED)
         
         self.connected = False
@@ -128,6 +145,9 @@ class SMBConnector:
         # 5. 设置窗口位置（格式："宽x高+横坐标+纵坐标"）
         self.root.geometry(f"{window_width}x{window_height}+{center_x}+{center_y}")
         # ------------------------------------------------------------------------
+    def open_default_browser(self):
+        """调用系统默认浏览器打开网页"""
+        webbrowser.open("10.32.10.17")  # 直接用系统默认浏览器打开（若需新窗口可改用open_new）
 
     # 以下方法仅修改与“路径选择”相关的逻辑，其他代码不变
     def _get_config_path(self):
@@ -246,9 +266,7 @@ class SMBConnector:
 
     def reboot_workstation(self):
         result = self.run_admin_command('net stop Workstation /y & net start Workstation')
-        import time
         time.sleep(2)
-        # start_res = self.run_admin_command('net start Workstation')
         return result
 
     def connect_smb(self):
@@ -295,9 +313,15 @@ class SMBConnector:
                     self.update_status(msg)
 
                     msg = self.run_command(command)
-                    # 如果失败再次执行
+                    # 如果失败再次执行，最高尝试3次
+                    
                     if "67" in msg:
-                        import time
+                        time.sleep(1)
+                        msg = self.run_command(command)
+                    if "67" in msg:
+                        time.sleep(1)
+                        msg = self.run_command(command)
+                    if "67" in msg:
                         time.sleep(1)
                         msg = self.run_command(command)
                     # 获取显示文本用于提示（仅为了用户友好，不影响路径逻辑）
@@ -314,7 +338,6 @@ class SMBConnector:
             elif "85" in result or "67" in result:
                 self.update_status(f"出现错误码：{result}")
                 self.run_admin_command('net start Workstation')
-                import time
                 time.sleep(3)
                 self.run_command(command)
                 self.connected = True
@@ -332,13 +355,11 @@ class SMBConnector:
             messagebox.showwarning("警告", "请先连接到SMB共享")
             return
         try:
-            # target_path = self.current_path.replace("\\\\\\\\", "\\\\")
-            # target_path = target_path.replace("17\\\\", "17\\")
-            os.startfile(self.current_path)
-            if "personal_folder" in self.current_path:
-                self.refresh_explorer()  # 新增：刷新资源管理器
+            # os.startfile(self.current_path)
+            os.startfile("\\\\10.32.10.17")
+            # if "personal_folder" in self.current_path:
+            self.refresh_explorer()  # 新增：刷新资源管理器
 
-            # messagebox.showinfo("测试",target_path)
             selected_text = next((opt[0] for opt in self.smb_options if opt[1] == self.current_path), self.current_path)
             self.update_status(f"已打开共享文件夹: {selected_text}")
         except Exception as e:
@@ -346,10 +367,6 @@ class SMBConnector:
             messagebox.showerror("失败", f"打开文件夹失败: {str(e)}")
     
     def disconnect_smb(self):
-        # if not self.connected or not self.current_path:
-        #     messagebox.showwarning("警告", "没有活跃的SMB连接")
-        #     return
-        
         selected_text = next((opt[0] for opt in self.smb_options if opt[1] == self.current_path), self.current_path)
         
         # 更彻底的断开连接方法
@@ -365,60 +382,13 @@ class SMBConnector:
         """强制断开所有SMB连接，解决系统残留连接问题"""
         try:
             self.update_status("正在清理SMB连接...")
-            
             # 1. 使用net use清理所有连接
             self.run_command('net use * /delete /y', show_output=False)
             
-            
-            # 2. 检查是否还有PowerShell连接残留
-            ps_check = self.run_admin_command('powershell -Command "Get-SmbConnection | Format-Table -AutoSize"', show_output=False)
-            if "10.32.10.17" in ps_check:
-                self.update_status("检测到PowerShell SMB连接残留，正在重启Workstation服务...")
-                try:
-                    # 停止Workstation服务
-                    self.reboot_workstation()
-                    # 再次清理
-                    self.run_command('net use * /delete /y', show_output=False)
-                    
-                    # 最终验证
-                    final_check = self.run_admin_command('powershell -Command "Get-SmbConnection | Format-Table -AutoSize"', show_output=False)
-                    if "10.32.10.17" not in final_check:
-                        self.update_status("SMB连接清理完成（已重启服务）")
-                    else:
-                        self.update_status("警告：仍有连接残留，可能需要重启计算机")
-                except Exception as e:
-                    self.update_status(f"重启服务时发生错误: {str(e)}")
-            else:
-                self.update_status("SMB连接清理完成")
-                
+            self.reboot_workstation()   #直接断开不检查
         except Exception as e:
             self.update_status(f"清理SMB连接时发生错误: {str(e)}")
     
-    def check_smb_connections(self):
-        """检查当前SMB连接状态"""
-        try:
-            # 检查多种连接状态
-            net_use_result = self.run_command('net use', show_output=False)
-            net_session_result = self.run_command('net session', show_output=False)
-            
-            # 检查是否有任何相关连接
-            has_connections = (
-                "10.32.10.17" in net_use_result or 
-                "10.32.10.17" in net_session_result or
-                "personal_folder" in net_use_result.lower() or
-                "共享文件夹" in net_use_result
-            )
-            
-            if has_connections:
-                self.update_status("检测到现有SMB连接，正在深度清理...")
-                self.force_disconnect_all_smb()
-                return False
-            else:
-                self.update_status("未检测到现有SMB连接")
-                return True
-        except Exception as e:
-            self.update_status(f"检查SMB连接状态时发生错误: {str(e)}")
-            return True
     
     def run_command(self, command, show_output=True):
         try:
